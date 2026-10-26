@@ -176,7 +176,8 @@ fn derive_variant_arm(variant: &VariantInfo, generics: &mut Option<WhereClause>)
         identifier.push('(');
         expr = quote! {
             std::fmt::Write::write_str(dest, #identifier)?;
-            #expr?;
+            let result: std::fmt::Result = { #expr };
+            result?;
             std::fmt::Write::write_str(dest, ")")
         }
     }
