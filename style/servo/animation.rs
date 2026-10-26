@@ -35,6 +35,7 @@ use crate::values::specified::TransitionBehavior;
 use debug_unreachable::debug_unreachable;
 use parking_lot::RwLock;
 use servo_arc::Arc;
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// Represents an animation for a given property.
@@ -1184,16 +1185,50 @@ pub struct ElementAnimationSet {
     /// The transitions for this element.
     pub transitions: Vec<Transition>,
 
+    /// Script animation samples, ordered by their document-wide composite order.
+    web_animations: BTreeMap<u64, WebAnimationSample>,
+
     /// Whether or not this ElementAnimationSet has had animations or transitions
     /// which have been added, removed, or had their state changed.
     pub dirty: bool,
 }
 
+#[derive(Debug, MallocSizeOf)]
+struct WebAnimationSample {
+    values: Box<[AnimationValue]>,
+    needs_ticks: bool,
+}
+
 impl ElementAnimationSet {
+    /// Publish computed replacement values for a script animation. The caller owns
+    /// timing and assigns a stable document-wide composite order to each animation.
+    /// Paused and filling effects may contribute values without requesting ticks.
+    pub fn set_web_animation_sample(
+        &mut self,
+        composite_order: u64,
+        values: AnimationValueMap,
+        needs_ticks: bool,
+    ) {
+        self.web_animations.insert(
+            composite_order,
+            WebAnimationSample {
+                values: values.into_values().collect(),
+                needs_ticks,
+            },
+        );
+        self.dirty = true;
+    }
+
+    /// Remove one script animation's contribution, revealing effects below it.
+    pub fn remove_web_animation_sample(&mut self, composite_order: u64) {
+        self.dirty |= self.web_animations.remove(&composite_order).is_some();
+    }
+
     /// Cancel all animations in this `ElementAnimationSet`. This is typically called
     /// when the element has been removed from the DOM.
     pub fn cancel_all_animations(&mut self) {
-        self.dirty = !self.animations.is_empty();
+        self.dirty |= !self.animations.is_empty() || !self.web_animations.is_empty();
+        self.web_animations.clear();
         for animation in self.animations.iter_mut() {
             animation.state = AnimationState::Canceled;
         }
@@ -1241,15 +1276,19 @@ impl ElementAnimationSet {
     /// Whether this `ElementAnimationSet` is empty, which means it doesn't
     /// hold any animations in any state.
     pub fn is_empty(&self) -> bool {
-        self.animations.is_empty() && self.transitions.is_empty()
+        self.animations.is_empty() && self.transitions.is_empty() && self.web_animations.is_empty()
     }
 
     /// Whether or not this state needs animation ticks for its transitions
     /// or animations.
     pub fn needs_animation_ticks(&self) -> bool {
-        self.animations
-            .iter()
-            .any(|animation| animation.state.needs_to_be_ticked())
+        self.web_animations
+            .values()
+            .any(|sample| sample.needs_ticks)
+            || self
+                .animations
+                .iter()
+                .any(|animation| animation.state.needs_to_be_ticked())
             || self
                 .transitions
                 .iter()
@@ -1258,10 +1297,15 @@ impl ElementAnimationSet {
 
     /// The number of running animations and transitions for this `ElementAnimationSet`.
     pub fn running_animation_and_transition_count(&self) -> usize {
-        self.animations
-            .iter()
-            .filter(|animation| animation.state.needs_to_be_ticked())
+        self.web_animations
+            .values()
+            .filter(|sample| sample.needs_ticks)
             .count()
+            + self
+                .animations
+                .iter()
+                .filter(|animation| animation.state.needs_to_be_ticked())
+                .count()
             + self
                 .transitions
                 .iter()
@@ -1271,9 +1315,11 @@ impl ElementAnimationSet {
 
     /// If this `ElementAnimationSet` has any any active animations.
     pub fn has_active_animation(&self) -> bool {
-        self.animations
-            .iter()
-            .any(|animation| animation.state != AnimationState::Canceled)
+        !self.web_animations.is_empty()
+            || self
+                .animations
+                .iter()
+                .any(|animation| animation.state != AnimationState::Canceled)
     }
 
     /// If this `ElementAnimationSet` has any any active transitions.
@@ -1606,6 +1652,14 @@ impl ElementAnimationSet {
         for animation in &self.animations {
             animation.get_property_declaration_at_time(now, &mut map);
         }
+        for sample in self.web_animations.values() {
+            map.extend(
+                sample
+                    .values
+                    .iter()
+                    .map(|value| (value.id().to_owned(), value.clone())),
+            );
+        }
 
         Some(map)
     }
@@ -1675,7 +1729,7 @@ impl DocumentAnimationSet {
             .map_or(false, |set| set.has_active_transition())
     }
 
-    /// Return whether or not the provided node has active CSS animations or transitions 
+    /// Return whether or not the provided node has active CSS animations or transitions
     pub fn has_active_animations_or_transitions(&self, key: &AnimationSetKey) -> bool {
         self.sets
             .read()
@@ -1929,5 +1983,59 @@ pub fn maybe_start_animations<E>(
         }
 
         animation_state.animations.push(new_animation);
+    }
+}
+
+#[cfg(test)]
+mod web_animation_tests {
+    use super::*;
+
+    fn opacity(value: f32) -> AnimationValueMap {
+        let value = AnimationValue::Opacity(value);
+        [(value.id().to_owned(), value)].into_iter().collect()
+    }
+
+    fn sampled_opacity(set: &ElementAnimationSet) -> f32 {
+        let values = set.get_value_map_for_active_animations(0.0).unwrap();
+        match values
+            .get(&AnimationValue::Opacity(0.0).id().to_owned())
+            .unwrap()
+        {
+            AnimationValue::Opacity(value) => *value,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn composite_order_survives_updates_and_removal_reveals_lower_effect() {
+        let mut set = ElementAnimationSet::default();
+        set.set_web_animation_sample(20, opacity(0.8), true);
+        set.set_web_animation_sample(10, opacity(0.2), true);
+        assert_eq!(sampled_opacity(&set), 0.8);
+        set.set_web_animation_sample(10, opacity(0.4), true);
+        assert_eq!(sampled_opacity(&set), 0.8);
+        set.remove_web_animation_sample(20);
+        assert_eq!(sampled_opacity(&set), 0.4);
+        set.remove_web_animation_sample(10);
+        assert!(set.get_value_map_for_active_animations(0.0).is_none());
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn retained_samples_do_not_tick_and_cancellation_releases_them() {
+        let mut set = ElementAnimationSet::default();
+        set.set_web_animation_sample(1, opacity(0.6), false);
+        assert_eq!(sampled_opacity(&set), 0.6);
+        assert!(!set.needs_animation_ticks());
+        assert_eq!(set.running_animation_and_transition_count(), 0);
+        set.set_web_animation_sample(2, opacity(0.9), true);
+        assert!(set.needs_animation_ticks());
+        assert_eq!(set.running_animation_and_transition_count(), 1);
+        set.dirty = false;
+        set.cancel_all_animations();
+        assert!(set.dirty);
+        assert!(set.is_empty());
+        assert!(!set.needs_animation_ticks());
+        assert!(set.get_value_map_for_active_animations(0.0).is_none());
     }
 }
