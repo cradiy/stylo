@@ -17,7 +17,6 @@ use crate::custom_properties::{SpecifiedValue, parse_name};
 use crate::derives::*;
 use crate::device::Device;
 use crate::dom::TElement;
-#[cfg(feature = "gecko")]
 use crate::dom::TShadowRoot;
 #[cfg(feature = "gecko")]
 use crate::gecko_bindings::structs::{ServoStyleSetSizes, StyleRuleInclusion};
@@ -29,7 +28,6 @@ use crate::invalidation::media_queries::{
     EffectiveMediaQueryResults, MediaListKey, ToMediaListKey,
 };
 use crate::invalidation::stylesheets::{RuleChangeKind, StylesheetInvalidationSet};
-#[cfg(feature = "gecko")]
 use crate::properties::StyleBuilder;
 use crate::properties::{
     self, AnimationDeclarations, CascadeMode, ComputedValues, FirstLineReparenting,
@@ -46,6 +44,7 @@ use crate::rule_cache::{RuleCache, RuleCacheConditions};
 use crate::rule_collector::RuleCollector;
 use crate::rule_tree::{
     CascadeLevel, CascadeOrigin, RuleCascadeFlags, RuleTree, StrongRuleNode, StyleSource,
+    StyleSourceBorrow,
 };
 use crate::selector_map::{
     BucketMatches, PrecomputedHashMap, PrecomputedHashSet, SelectorMap, SelectorMapEntry,
@@ -71,7 +70,6 @@ use crate::stylesheets::{
     ViewTransitionRule,
 };
 use crate::stylesheets::{CustomMediaEvaluator, CustomMediaMap};
-#[cfg(feature = "gecko")]
 use crate::values::specified::position::PositionTryFallbacksItem;
 use crate::values::specified::position::PositionTryFallbacksTryTactic;
 use crate::values::{AtomIdent, Parser, SourceLocation, computed};
@@ -405,7 +403,12 @@ impl CascadeDataCacheEntry for UserAgentCascadeData {
 
 type UserAgentCascadeDataCache = CascadeDataCache<UserAgentCascadeData>;
 
-type PrecomputedPseudoElementDeclarations = PerPseudoElementMap<Vec<ApplicableDeclarationBlock>>;
+/// The declarations for the precomputed pseudo-elements.
+///
+/// We don't need the rest of the fields of `ApplicableDeclarationBlock`: These are never sorted
+/// (they're in document order, and their selectors are all universal), and they're all UA rules in
+/// the root layer.
+type PrecomputedPseudoElementDeclarations = PerPseudoElementMap<Vec<StyleSource>>;
 
 #[derive(Default)]
 struct UserAgentCascadeData {
@@ -1203,7 +1206,7 @@ impl Stylist {
     {
         debug_assert!(pseudo.is_precomputed());
 
-        let rule_node = self.rule_node_for_precomputed_pseudo(guards, pseudo, vec![]);
+        let rule_node = self.rule_node_for_precomputed_pseudo(guards, pseudo, &[]);
 
         self.precomputed_values_for_pseudo_with_rule_node::<E>(guards, pseudo, parent, rule_node)
     }
@@ -1246,29 +1249,28 @@ impl Stylist {
         &self,
         guards: &StylesheetGuards,
         pseudo: &PseudoElement,
-        mut extra_declarations: Vec<ApplicableDeclarationBlock>,
+        extra_declarations: &[ApplicableDeclarationBlock],
     ) -> StrongRuleNode {
-        let mut declarations_with_extra;
         let declarations = match self
             .cascade_data
             .user_agent
             .precomputed_pseudo_element_decls
             .get(pseudo)
         {
-            Some(declarations) => {
-                if !extra_declarations.is_empty() {
-                    declarations_with_extra = declarations.clone();
-                    declarations_with_extra.append(&mut extra_declarations);
-                    &*declarations_with_extra
-                } else {
-                    &**declarations
-                }
-            },
+            Some(declarations) => &**declarations,
             None => &[],
         };
 
+        let cascade_priority = CascadePriority::new(
+            CascadeLevel::new(CascadeOrigin::UA),
+            LayerOrder::root(),
+            RuleCascadeFlags::empty(),
+        );
         self.rule_tree.insert_ordered_rules_with_important(
-            declarations.iter().map(|a| a.clone().for_rule_tree()),
+            declarations
+                .iter()
+                .map(|source| (source.borrow(), cascade_priority))
+                .chain(extra_declarations.iter().map(|d| d.for_rule_tree())),
             guards,
         )
     }
@@ -1372,7 +1374,6 @@ impl Stylist {
     }
 
     /// Computes a fallback style lazily given the current and parent styles, and name.
-    #[cfg(feature = "gecko")]
     pub fn resolve_position_try<E>(
         &self,
         style: &ComputedValues,
@@ -1557,6 +1558,7 @@ impl Stylist {
             NeedsSelectorFlags::Yes
         };
 
+        let animation_declarations = AnimationDeclarations::default();
         let mut declarations = ApplicableDeclarationList::new();
         let mut matching_context = MatchingContext::<'_, E::Impl>::new(
             MatchingMode::ForStatelessPseudoElement,
@@ -1575,7 +1577,7 @@ impl Stylist {
             Some(pseudo),
             None,
             None,
-            /* animation_declarations = */ Default::default(),
+            &animation_declarations,
             rule_inclusion,
             &mut declarations,
             &mut matching_context,
@@ -1609,7 +1611,7 @@ impl Stylist {
                 Some(pseudo),
                 None,
                 None,
-                /* animation_declarations = */ Default::default(),
+                &animation_declarations,
                 rule_inclusion,
                 &mut declarations,
                 &mut matching_context,
@@ -1699,18 +1701,18 @@ impl Stylist {
     }
 
     /// Returns the applicable CSS declarations for the given element.
-    pub fn push_applicable_declarations<E>(
-        &self,
+    pub fn push_applicable_declarations<'a, E>(
+        &'a self,
         element: E,
         pseudo_element: Option<&PseudoElement>,
-        style_attribute: Option<ArcBorrow<Locked<PropertyDeclarationBlock>>>,
-        smil_override: Option<ArcBorrow<Locked<PropertyDeclarationBlock>>>,
-        animation_declarations: AnimationDeclarations,
+        style_attribute: Option<ArcBorrow<'a, Locked<PropertyDeclarationBlock>>>,
+        smil_override: Option<ArcBorrow<'a, Locked<PropertyDeclarationBlock>>>,
+        animation_declarations: &'a AnimationDeclarations,
         rule_inclusion: RuleInclusion,
-        applicable_declarations: &mut ApplicableDeclarationList,
+        applicable_declarations: &mut ApplicableDeclarationList<'a>,
         context: &mut MatchingContext<E::Impl>,
     ) where
-        E: TElement,
+        E: TElement + 'a,
     {
         let mut cur = element;
         let mut pseudos = SmallVec::<[_; 2]>::new();
@@ -1828,7 +1830,6 @@ impl Stylist {
 
     /// Returns the registered `@position-try-rule` animation for the specified name.
     #[inline]
-    #[cfg(feature = "gecko")]
     fn lookup_position_try<'a, E>(
         &'a self,
         name: &Atom,
@@ -2269,12 +2270,12 @@ impl PageRuleMap {
     /// Uses page-name and pseudo-classes to match all applicable
     /// page-rules and append them to the matched_rules vec.
     /// This will ensure correct rule order for cascading.
-    pub fn match_and_append_rules(
-        &self,
-        matched_rules: &mut Vec<ApplicableDeclarationBlock>,
+    pub fn match_and_append_rules<'a>(
+        &'a self,
+        matched_rules: &mut Vec<ApplicableDeclarationBlock<'a>>,
         origin: Origin,
-        guards: &StylesheetGuards,
-        cascade_data: &DocumentCascadeData,
+        guards: &'a StylesheetGuards,
+        cascade_data: &'a DocumentCascadeData,
         name: &Option<Atom>,
         pseudos: PagePseudoClassFlags,
     ) {
@@ -2303,12 +2304,12 @@ impl PageRuleMap {
         matched_rules[start..].sort_by_key(|block| block.sort_key());
     }
 
-    fn match_and_add_rules(
-        &self,
-        extra_declarations: &mut Vec<ApplicableDeclarationBlock>,
+    fn match_and_add_rules<'a>(
+        &'a self,
+        extra_declarations: &mut Vec<ApplicableDeclarationBlock<'a>>,
         level: CascadeLevel,
-        guards: &StylesheetGuards,
-        cascade_data: &CascadeData,
+        guards: &'a StylesheetGuards,
+        cascade_data: &'a CascadeData,
         name: &Atom,
         pseudos: PagePseudoClassFlags,
     ) {
@@ -2322,9 +2323,8 @@ impl PageRuleMap {
                 Some(specificity) => specificity,
                 None => continue,
             };
-            let block = rule.block.clone();
             extra_declarations.push(ApplicableDeclarationBlock::new(
-                StyleSource::from_declarations(block),
+                StyleSourceBorrow::from_declarations(rule.block.borrow_arc()),
                 0,
                 level,
                 specificity,
@@ -3865,15 +3865,7 @@ impl CascadeData {
                         .as_mut()
                         .expect("Expected precomputed declarations for the UA level")
                         .get_or_insert_with(pseudo, Vec::new)
-                        .push(ApplicableDeclarationBlock::new(
-                            StyleSource::from_declarations(declarations.clone()),
-                            self.rules_source_order,
-                            CascadeLevel::new(CascadeOrigin::UA),
-                            selector.specificity(),
-                            LayerOrder::root(),
-                            ScopeProximity::infinity(),
-                            RuleCascadeFlags::empty(),
-                        ));
+                        .push(StyleSource::from_declarations(declarations.clone()));
                     continue;
                 }
                 if pseudo_elements
@@ -4942,9 +4934,9 @@ impl Rule {
         level: CascadeLevel,
         cascade_data: &CascadeData,
         scope_proximity: ScopeProximity,
-    ) -> ApplicableDeclarationBlock {
+    ) -> ApplicableDeclarationBlock<'_> {
         ApplicableDeclarationBlock::new(
-            self.style_source.clone(),
+            self.style_source.borrow(),
             self.source_order,
             level,
             self.specificity(),
