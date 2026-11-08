@@ -1208,7 +1208,18 @@ impl ElementAnimationSet {
         composite_order: u64,
         values: AnimationValueMap,
         needs_ticks: bool,
-    ) {
+    ) -> bool {
+        if let Some(sample) = self.web_animations.get_mut(&composite_order) {
+            sample.needs_ticks = needs_ticks;
+            if sample.values.len() == values.len()
+                && sample
+                    .values
+                    .iter()
+                    .all(|value| values.get(&value.id().to_owned()) == Some(value))
+            {
+                return false;
+            }
+        }
         self.web_animations.insert(
             composite_order,
             WebAnimationSample {
@@ -1217,6 +1228,7 @@ impl ElementAnimationSet {
             },
         );
         self.dirty = true;
+        true
     }
 
     /// Remove one script animation's contribution, revealing effects below it.
@@ -2019,6 +2031,19 @@ mod web_animation_tests {
         set.remove_web_animation_sample(10);
         assert!(set.get_value_map_for_active_animations(0.0).is_none());
         assert!(set.is_empty());
+    }
+
+    #[test]
+    fn unchanged_samples_update_tick_state_without_invalidating_style() {
+        let mut set = ElementAnimationSet::default();
+        assert!(set.set_web_animation_sample(1, opacity(0.6), true));
+        set.dirty = false;
+        assert!(!set.set_web_animation_sample(1, opacity(0.6), false));
+        assert!(!set.dirty);
+        assert!(!set.needs_animation_ticks());
+        assert!(set.set_web_animation_sample(1, opacity(0.7), false));
+        assert!(set.dirty);
+        assert_eq!(sampled_opacity(&set), 0.7);
     }
 
     #[test]
