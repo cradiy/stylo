@@ -240,6 +240,13 @@ impl ContainerCondition {
     where
         E: TElement,
     {
+        if self
+            .condition
+            .as_ref()
+            .is_some_and(QueryCondition::has_unknown_container_feature)
+        {
+            return TraversalResult::StopTraversal;
+        }
         let data;
         let style = match originating_element_style {
             Some(s) => s,
@@ -319,6 +326,9 @@ impl ContainerCondition {
         E: TElement,
     {
         let result = self.find_container(element, originating_element_style);
+        if !self.name.is_none() {
+            invalidation_flags.insert(ComputedValueFlags::DEPENDS_ON_CONTAINER_STYLE_QUERY);
+        }
         let condition = match self.condition {
             Some(ref c) => c,
             None => {

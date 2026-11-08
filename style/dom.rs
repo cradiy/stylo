@@ -940,6 +940,9 @@ pub trait TElement:
         display: &Display,
     ) -> euclid::default::Size2D<Option<app_units::Au>>;
 
+    /// Records that the document has styled an element as a size query container.
+    fn note_size_query_container(&self) {}
+
     /// Returns true if the element has all of specified selector flags.
     fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool;
 

@@ -769,6 +769,17 @@ impl QueryCondition {
         }
     }
 
+    /// Whether the query refers to a feature for which no container can be selected.
+    pub(crate) fn has_unknown_container_feature(&self) -> bool {
+        let mut unknown = false;
+        self.visit(&mut |condition| {
+            if matches!(condition, Self::GeneralEnclosed(..)) {
+                unknown = true;
+            }
+        });
+        unknown
+    }
+
     /// Returns the union of all flags in the expression. This is useful for
     /// container queries.
     pub fn cumulative_flags(&self) -> FeatureFlags {

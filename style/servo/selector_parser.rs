@@ -113,6 +113,17 @@ impl ToCss for PseudoElement {
 }
 
 impl ::selectors::parser::PseudoElement for PseudoElement {
+    fn valid_after_slotted(&self) -> bool {
+        matches!(
+            self,
+            Self::Before
+                | Self::After
+                | Self::Marker
+                | Self::Placeholder
+                | Self::FileSelectorButton
+        )
+    }
+
     fn parses_as_element_backed(&self) -> bool {
         matches!(self, Self::DetailsContent)
     }

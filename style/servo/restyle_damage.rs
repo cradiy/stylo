@@ -71,7 +71,8 @@ impl ServoRestyleDamage {
             damage |= E::compute_layout_damage(old, new);
         }
 
-        let mut any_style_changed = !damage.is_empty();
+        let mut any_style_changed =
+            !damage.is_empty() || old.get_container_name() != new.get_container_name();
         // FIXME(emilio): Differentiate between reset and inherited
         // properties here, and set `reset_only` appropriately so the
         // optimization to skip the cascade in those cases applies.

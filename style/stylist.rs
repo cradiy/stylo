@@ -1986,6 +1986,20 @@ impl Stylist {
     where
         E: TElement,
     {
+        self.compute_for_declarations_with_element::<E>(guards, parent_style, declarations, None)
+    }
+
+    /// Computes declarations with an optional element for container-relative values.
+    pub fn compute_for_declarations_with_element<E>(
+        &self,
+        guards: &StylesheetGuards,
+        parent_style: &ComputedValues,
+        declarations: Arc<Locked<PropertyDeclarationBlock>>,
+        element: Option<E>,
+    ) -> Arc<ComputedValues>
+    where
+        E: TElement,
+    {
         let block = declarations.read_with(guards.author);
 
         // We don't bother inserting these declarations in the rule tree, since
@@ -2020,7 +2034,7 @@ impl Stylist {
             RuleCascadeFlags::empty(),
             /* rule_cache = */ None,
             &mut Default::default(),
-            /* element = */ None,
+            element,
             &mut TreeCountingCaches::default(),
         )
     }

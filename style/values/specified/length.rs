@@ -188,12 +188,12 @@ impl LengthUnit {
             "dvi" if !in_page_rule => Self::Dvi,
             // Container query lengths. Inherit the limitation from viewport units since
             // we may fall back to them.
-            "cqw" if !in_page_rule => Self::Cqw,
-            "cqh" if !in_page_rule => Self::Cqh,
-            "cqi" if !in_page_rule => Self::Cqi,
-            "cqb" if !in_page_rule => Self::Cqb,
-            "cqmin" if !in_page_rule => Self::Cqmin,
-            "cqmax" if !in_page_rule => Self::Cqmax,
+            "cqw" if !in_page_rule && allows_computational_dependence => Self::Cqw,
+            "cqh" if !in_page_rule && allows_computational_dependence => Self::Cqh,
+            "cqi" if !in_page_rule && allows_computational_dependence => Self::Cqi,
+            "cqb" if !in_page_rule && allows_computational_dependence => Self::Cqb,
+            "cqmin" if !in_page_rule && allows_computational_dependence => Self::Cqmin,
+            "cqmax" if !in_page_rule && allows_computational_dependence => Self::Cqmax,
             _ => return Err(()),
         })
     }

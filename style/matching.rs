@@ -1025,6 +1025,9 @@ pub trait MatchMethods: TElement {
         let device = context.shared.stylist.device();
         let new_font_size = new_primary_style.get_font().slow_clone_font_size();
         let new_container_type = *new_primary_style.get_container_type();
+        if new_container_type.is_size_container_type() {
+            self.note_size_query_container();
+        }
 
         let old_style = old_styles.primary.as_ref();
         let old_font_size = old_style.map(|s| s.get_font().slow_clone_font_size());
@@ -1107,6 +1110,9 @@ pub trait MatchMethods: TElement {
         // when computing the style from scratch.
         if !old_primary_style.writing_mode_equals(new_primary_style) {
             child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_WM_OR_ANCESTOR_FONT;
+            if new_container_type.is_size_container_type() {
+                child_restyle_hint |= RestyleHint::restyle_subtree();
+            }
         }
 
         let old_container_type = *old_primary_style.get_container_type();
